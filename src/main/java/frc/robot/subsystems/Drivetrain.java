@@ -9,13 +9,9 @@ import static edu.wpi.first.units.Units.Meters;
 import static edu.wpi.first.units.Units.MetersPerSecond;
 import static edu.wpi.first.units.Units.Volts;
 
-import java.util.function.BooleanSupplier;
-
 import org.littletonrobotics.junction.AutoLogOutput;
 
 import com.kauailabs.navx.frc.AHRS;
-import com.pathplanner.lib.auto.AutoBuilder;
-import com.pathplanner.lib.util.ReplanningConfig;
 import com.revrobotics.CANSparkBase.IdleMode;
 import com.revrobotics.CANSparkLowLevel.MotorType;
 import com.revrobotics.RelativeEncoder;
@@ -58,7 +54,7 @@ public class Drivetrain extends Subsystem {
 
   private static final double kSlowModeRotScale = 0.1;
   private static final double kSpeedModeScale = 2.0;
-  private static final double kTrackWidth = Units.inchesToMeters(22.0);
+  private static final double kTrackWidth = Units.inchesToMeters(20.75);
   private static final double kWheelRadius = Units.inchesToMeters(3.0);
   private static final double kGearRatio = 10.71;
   private static final double kMetersPerRev = (2.0 * Math.PI * kWheelRadius) / kGearRatio;
@@ -85,11 +81,12 @@ public class Drivetrain extends Subsystem {
   private final DifferentialDriveKinematics mKinematics = new DifferentialDriveKinematics(kTrackWidth);
 
   private final DifferentialDriveOdometry mOdometry;
+  private boolean mPoseWasSet = false;
 
   private final SimpleMotorFeedforward mLeftFeedforward = new SimpleMotorFeedforward(Constants.Drive.kS,
-      Constants.Drive.kV);
+      Constants.Drive.kV, Constants.Drive.kA);
   private final SimpleMotorFeedforward mRightFeedforward = new SimpleMotorFeedforward(Constants.Drive.kS,
-      Constants.Drive.kV);
+      Constants.Drive.kV, Constants.Drive.kA);
 
   /*********
    * SysId *
@@ -146,8 +143,8 @@ public class Drivetrain extends Subsystem {
     mRightLeader.setInverted(true);
 
     // Set the leader/follower relationship for the left and right sides
-    mLeftFollower.follow(mLeftLeader, mLeftLeader.getInverted());
-    mRightFollower.follow(mRightLeader, mRightLeader.getInverted());
+    mLeftFollower.follow(mLeftLeader, false);
+    mRightFollower.follow(mRightLeader, false);
 
     mLeftEncoder = mLeftLeader.getEncoder();
     mRightEncoder = mRightLeader.getEncoder();
@@ -170,21 +167,22 @@ public class Drivetrain extends Subsystem {
 
     mPeriodicIO = new PeriodicIO();
 
+    // TODO: get rid of this?
     // Configure AutoBuilder last
-    AutoBuilder.configureRamsete(
-        this::getPose, // Robot pose supplier
-        this::resetOdometry, // Method to reset odometry (will be called if your auto has a starting pose)
-        this::getCurrentSpeeds, // Current ChassisSpeeds supplier
-        this::drive, // Method that will drive the robot given ChassisSpeeds
-        new ReplanningConfig(), // Default path replanning config. See the API for the options here
-        new BooleanSupplier() {
-          @Override
-          public boolean getAsBoolean() {
-            return true;
-          }
-        }, // determines if paths should be flipped to the other side of the field
-        this // Reference to this subsystem to set requirements
-    );
+    // AutoBuilder.configureRamsete(
+    //     this::getPose, // Robot pose supplier
+    //     this::resetOdometry, // Method to reset odometry (will be called if your auto has a starting pose)
+    //     this::getCurrentSpeeds, // Current ChassisSpeeds supplier
+    //     this::drive, // Method that will drive the robot given ChassisSpeeds
+    //     new ReplanningConfig(), // Default path replanning config. See the API for the options here
+    //     new BooleanSupplier() {
+    //       @Override
+    //       public boolean getAsBoolean() {
+    //         return true;
+    //       }
+    //     }, // determines if paths should be flipped to the other side of the field
+    //     this // Reference to this subsystem to set requirements
+    // );
 
     mSysIdRoutine = new SysIdRoutine(
         // Empty config defaults to 1 volt/second ramp rate and 7 volt step voltage.
@@ -192,7 +190,7 @@ public class Drivetrain extends Subsystem {
         new SysIdRoutine.Mechanism(
             // Tell SysId how to plumb the driving voltage to the motors.
             (Measure<Voltage> volts) -> {
-              // System.out.println("OPE:" + volts);
+              // RobotTelemetry.print("OPE:" + volts);
               mLeftLeader.setVoltage(volts.in(Volts));
               mRightLeader.setVoltage(volts.in(Volts));
             },
@@ -211,12 +209,12 @@ public class Drivetrain extends Subsystem {
               // consider the entire group to be one motor.
               log.motor("drive-right")
                   .voltage(m_appliedVoltage.mut_replace(
-                      -mRightLeader.getAppliedOutput() * RobotController
+                      mRightLeader.getAppliedOutput() * RobotController
                           .getBatteryVoltage(),
                       Volts))
-                  .linearPosition(m_distance.mut_replace(-mRightEncoder.getPosition(), Meters))
+                  .linearPosition(m_distance.mut_replace(mRightEncoder.getPosition(), Meters))
                   .linearVelocity(
-                      m_velocity.mut_replace(-mRightEncoder.getVelocity(), MetersPerSecond));
+                      m_velocity.mut_replace(mRightEncoder.getVelocity(), MetersPerSecond));
             },
             // Tell SysId to make generated commands require this subsystem, suffix test
             // state in WPILog with this subsystem's name ("drive")
@@ -230,6 +228,13 @@ public class Drivetrain extends Subsystem {
     boolean speedMode = false;
     double leftVoltage = 0.0;
     double rightVoltage = 0.0;
+  }
+
+  /**
+   * Gets whether the bot pose has previously been set
+   */
+  public boolean poseWasSet() {
+    return mPoseWasSet;
   }
 
   /**
@@ -282,19 +287,18 @@ public class Drivetrain extends Subsystem {
 
   /** Update robot odometry. */
   public void updateOdometry() {
-    mOdometry.update(mGyro.getRotation2d(), mLeftEncoder.getPosition(), -mRightEncoder.getPosition());
+    mOdometry.update(mGyro.getRotation2d(), mLeftEncoder.getPosition(), mRightEncoder.getPosition());
   }
 
   /** Resets robot odometry. */
   public void resetOdometry(Pose2d pose) {
-    mLeftEncoder.setPosition(0.0);
-    mRightEncoder.setPosition(0.0);
+    // mPoseWasSet = true;
     mDrivetrainSimulator.setPose(pose);
 
     mOdometry.resetPosition(
         mGyro.getRotation2d(),
-        0.0,
-        0.0,
+        mLeftEncoder.getPosition(),
+        mRightEncoder.getPosition(),
         pose);
   }
 
@@ -308,14 +312,14 @@ public class Drivetrain extends Subsystem {
     mOdometry.resetPosition(
         mGyro.getRotation2d(),
         mLeftEncoder.getPosition(),
-        -mRightEncoder.getPosition(),
+        mRightEncoder.getPosition(),
         pose);
   }
 
   public ChassisSpeeds getCurrentSpeeds() {
     DifferentialDriveWheelSpeeds wheelSpeeds = new DifferentialDriveWheelSpeeds(
         mLeftEncoder.getVelocity(),
-        -mRightEncoder.getVelocity());
+        mRightEncoder.getVelocity());
 
     return mKinematics.toChassisSpeeds(wheelSpeeds);
   }
@@ -344,7 +348,7 @@ public class Drivetrain extends Subsystem {
     var rightFeedforward = mRightFeedforward.calculate(mPeriodicIO.diffWheelSpeeds.rightMetersPerSecond);
     double leftOutput = mLeftPIDController.calculate(mLeftEncoder.getVelocity(),
         mPeriodicIO.diffWheelSpeeds.leftMetersPerSecond);
-    double rightOutput = mRightPIDController.calculate(-mRightEncoder.getVelocity(),
+    double rightOutput = mRightPIDController.calculate(mRightEncoder.getVelocity(),
         mPeriodicIO.diffWheelSpeeds.rightMetersPerSecond);
 
     mPeriodicIO.leftVoltage = leftOutput + leftFeedforward;
@@ -374,11 +378,13 @@ public class Drivetrain extends Subsystem {
   @Override
   public void outputTelemetry() {
     putNumber("leftVelocitySetPoint", mPeriodicIO.diffWheelSpeeds.leftMetersPerSecond);
+    putNumber("leftVelocityError", mPeriodicIO.diffWheelSpeeds.leftMetersPerSecond - mLeftEncoder.getVelocity());
     putNumber("rightVelocitySetPoint", mPeriodicIO.diffWheelSpeeds.rightMetersPerSecond);
+    putNumber("rightVelocityError", mPeriodicIO.diffWheelSpeeds.rightMetersPerSecond - mRightEncoder.getVelocity());
     putNumber("leftVelocity", mLeftEncoder.getVelocity());
-    putNumber("rightVelocity", -mRightEncoder.getVelocity());
+    putNumber("rightVelocity", mRightEncoder.getVelocity());
     putNumber("leftMeters", mLeftEncoder.getPosition());
-    putNumber("rightMeters", -mRightEncoder.getPosition());
+    putNumber("rightMeters", mRightEncoder.getPosition());
     putNumber("Gyro", mGyro.getAngle());
   }
 
