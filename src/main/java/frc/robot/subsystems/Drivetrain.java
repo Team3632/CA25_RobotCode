@@ -54,6 +54,8 @@ public class Drivetrain extends Subsystem {
 
   private static final double kSlowModeRotScale = 0.1;
   private static final double kSpeedModeScale = 2.0;
+  private static final double kTippyModeScale = 0.7;
+
   private static final double kTrackWidth = Units.inchesToMeters(20.75);
   private static final double kWheelRadius = Units.inchesToMeters(3.0);
   private static final double kGearRatio = 10.71;
@@ -77,6 +79,7 @@ public class Drivetrain extends Subsystem {
       Constants.Drive.kD);
 
   private final AHRS mGyro = new AHRS();
+  private final Elevator mElevator = Elevator.getInstance();
 
   private final DifferentialDriveKinematics mKinematics = new DifferentialDriveKinematics(kTrackWidth);
 
@@ -170,18 +173,20 @@ public class Drivetrain extends Subsystem {
     // TODO: get rid of this?
     // Configure AutoBuilder last
     // AutoBuilder.configureRamsete(
-    //     this::getPose, // Robot pose supplier
-    //     this::resetOdometry, // Method to reset odometry (will be called if your auto has a starting pose)
-    //     this::getCurrentSpeeds, // Current ChassisSpeeds supplier
-    //     this::drive, // Method that will drive the robot given ChassisSpeeds
-    //     new ReplanningConfig(), // Default path replanning config. See the API for the options here
-    //     new BooleanSupplier() {
-    //       @Override
-    //       public boolean getAsBoolean() {
-    //         return true;
-    //       }
-    //     }, // determines if paths should be flipped to the other side of the field
-    //     this // Reference to this subsystem to set requirements
+    // this::getPose, // Robot pose supplier
+    // this::resetOdometry, // Method to reset odometry (will be called if your auto
+    // has a starting pose)
+    // this::getCurrentSpeeds, // Current ChassisSpeeds supplier
+    // this::drive, // Method that will drive the robot given ChassisSpeeds
+    // new ReplanningConfig(), // Default path replanning config. See the API for
+    // the options here
+    // new BooleanSupplier() {
+    // @Override
+    // public boolean getAsBoolean() {
+    // return true;
+    // }
+    // }, // determines if paths should be flipped to the other side of the field
+    // this // Reference to this subsystem to set requirements
     // );
 
     mSysIdRoutine = new SysIdRoutine(
@@ -268,7 +273,15 @@ public class Drivetrain extends Subsystem {
       mPeriodicIO.diffWheelSpeeds = mKinematics
           .toWheelSpeeds(new ChassisSpeeds(xSpeed * kSpeedModeScale, 0, rot * kSlowModeRotScale));
     } else {
-      mPeriodicIO.diffWheelSpeeds = mKinematics.toWheelSpeeds(new ChassisSpeeds(xSpeed, 0, rot));
+      Elevator.ElevatorState state = mElevator.getState();
+
+      boolean highSetPoint = state == Elevator.ElevatorState.L4 ||
+          state == Elevator.ElevatorState.L3 ||
+          state == Elevator.ElevatorState.A2;
+
+      double scale = (highSetPoint ? kTippyModeScale : 1.0);
+
+      mPeriodicIO.diffWheelSpeeds = mKinematics.toWheelSpeeds(new ChassisSpeeds(xSpeed * scale, 0, rot));
     }
   }
 
